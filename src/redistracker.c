@@ -1,38 +1,3 @@
-/* Hellodict -- An example of modules dictionary API
- *
- * This module implements a volatile key-value store on top of the
- * dictionary exported by the Redis modules API.
- *
- * -----------------------------------------------------------------------------
- *
- * Copyright (c) 2018, Salvatore Sanfilippo <antirez at gmail dot com>
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- *   * Redistributions of source code must retain the above copyright notice,
- *     this list of conditions and the following disclaimer.
- *   * Redistributions in binary form must reproduce the above copyright
- *     notice, this list of conditions and the following disclaimer in the
- *     documentation and/or other materials provided with the distribution.
- *   * Neither the name of Redis nor the names of its contributors may be used
- *     to endorse or promote products derived from this software without
- *     specific prior written permission.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
- * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
- * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
- * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
- * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
- * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
- * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGE.
- */
-
 #define REDISMODULE_EXPERIMENTAL_API
 #include <ctype.h>
 #include <stdio.h>
@@ -41,10 +6,12 @@
 
 #include "redismodule.h"
 
+static RedisModuleType *RedisTrackerType;
+
 /* ========================== Internal data structure  =======================*/
 typedef struct Peer {
   char peer[6];
-  char peer[18];
+  char peer6[18];
 } peer;
 
 static peer *createPeerObject(void) {
@@ -124,70 +91,62 @@ void seedersCompaction(SeedersObj *s) {
 
 /* ================= "redistracker" type commands=======================*/
 
-/* ================= "redistracker" methods commands=======================*/
-
-static RedisModuleDict *Keyspace;
-
-/* HELLODICT.SET <key> <value>
- *
- * Set the specified key to the specified value. */
-int cmd_SET(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
-  if (argc != 3) return RedisModule_WrongArity(ctx);
-  RedisModule_DictSet(Keyspace, argv[1], argv[2]);
-  /* We need to keep a reference to the value stored at the key, otherwise
-   * it would be freed when this callback returns. */
-  RedisModule_RetainString(NULL, argv[2]);
-  return RedisModule_ReplyWithSimpleString(ctx, "OK");
-}
-
-/* HELLODICT.GET <key>
- *
- * Return the value of the specified key, or a null reply if the key
- * is not defined. */
-int cmd_GET(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
-  if (argc != 2) return RedisModule_WrongArity(ctx);
-  RedisModuleString *val = RedisModule_DictGet(Keyspace, argv[1], NULL);
-  if (val == NULL) {
-    return RedisModule_ReplyWithNull(ctx);
+/* ANNOUNCE <info_hash> <passkey> <v4ip> <v6ip> <port> */
+int RedisTrackerTypeAnnounce_RedisCommand(RedisModuleCtx *ctx,
+                                          RedisModuleString **argv, int argc) {
+  RedisModule_AutoMemory(ctx);
+  if (argc != 6) {
+    // GG
+    // todo
+  }
+  SeedersObj *o = NULL;
+  RedisModuleKey *key = RedisModule_OpenKey(ctx, argv[1], REDISMODULE_WRITE);
+  int type = RedisModule_KeyType(key);
+  if (REDISMODULE_KEYTYPE_EMPTY == type) {
+    o = createSeedersObject();
+    RedisModule_ModuleTypeSetValue(key, RedisTrackerType, o);
   } else {
-    return RedisModule_ReplyWithString(ctx, val);
+    if (RedisModule_ModuleTypeGetType(key) != RedisTrackerType) {
+      RedisModule_ReplyWithError(ctx, REDISMODULE_ERRORMSG_WRONGTYPE);
+      return REDISMODULE_ERR;
+    }
+    o = RedisModule_ModuleTypeGetValue(key);
   }
-}
-
-/* HELLODICT.KEYRANGE <startkey> <endkey> <count>
- *
- * Return a list of matching keys, lexicographically between startkey
- * and endkey. No more than 'count' items are emitted. */
-int cmd_KEYRANGE(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
-  if (argc != 4) return RedisModule_WrongArity(ctx);
-
-  /* Parse the count argument. */
-  long long count;
-  if (RedisModule_StringToLongLong(argv[3], &count) != REDISMODULE_OK) {
-    return RedisModule_ReplyWithError(ctx, "ERR invalid count");
-  }
-
-  /* Seek the iterator. */
-  RedisModuleDictIter *iter =
-      RedisModule_DictIteratorStart(Keyspace, ">=", argv[1]);
-
-  /* Reply with the matching items. */
-  char *key;
-  size_t keylen;
-  long long replylen = 0; /* Keep track of the amitted array len. */
-  RedisModule_ReplyWithArray(ctx, REDISMODULE_POSTPONED_ARRAY_LEN);
-  while ((key = RedisModule_DictNextC(iter, &keylen, NULL)) != NULL) {
-    if (replylen >= count) break;
-    if (RedisModule_DictCompare(iter, "<=", argv[2]) == REDISMODULE_ERR) break;
-    RedisModule_ReplyWithStringBuffer(ctx, key, keylen);
-    replylen++;
-  }
-  RedisModule_ReplySetArrayLength(ctx, replylen);
-
-  /* Cleanup. */
-  RedisModule_DictIteratorStop(iter);
+  
+  // todo
   return REDISMODULE_OK;
 }
+
+/* ==================== "redistracker" methods commands==================*/
+void *TrackerTypeRdbLoad(RedisModuleIO *rdb, int encver) {
+  REDISMODULE_NOT_USED(rdb);
+  REDISMODULE_NOT_USED(encver);
+  return createSeedersObject();
+}
+
+void TrackerTypeRdbSave(RedisModuleIO *rdb, void *value) {
+  REDISMODULE_NOT_USED(rdb);
+  REDISMODULE_NOT_USED(value);
+  return;
+}
+
+void TrackerTypeAofRewrite(RedisModuleIO *aof, RedisModuleString *key,
+                           void *value) {
+  REDISMODULE_NOT_USED(aof);
+  REDISMODULE_NOT_USED(key);
+  REDISMODULE_NOT_USED(value);
+  return;
+}
+
+size_t TrackerTypeMemUsage(const void *value) {
+  REDISMODULE_NOT_USED(value);
+  // todo
+  return 114514;
+}
+
+void TrackerTypeFree(void *value) { releaseDictObject(value); }
+
+
 
 /* This function must be present on each Redis module. It is used in order to
  * register the commands into the Redis server. */
@@ -196,24 +155,28 @@ int RedisModule_OnLoad(RedisModuleCtx *ctx, RedisModuleString **argv,
   REDISMODULE_NOT_USED(argv);
   REDISMODULE_NOT_USED(argc);
 
-  if (RedisModule_Init(ctx, "hellodict", 1, REDISMODULE_APIVER_1) ==
+  if (RedisModule_Init(ctx, "redistracker", 1, REDISMODULE_APIVER_1) ==
       REDISMODULE_ERR)
     return REDISMODULE_ERR;
 
-  if (RedisModule_CreateCommand(ctx, "hellodict.set", cmd_SET, "write deny-oom",
-                                1, 1, 0) == REDISMODULE_ERR)
+  if (RedisModule_CreateCommand(ctx, "announce",
+                                RedisTrackerTypeAnnounce_RedisCommand,
+                                "write deny-oom", 1, 1, 1) == REDISMODULE_ERR)
     return REDISMODULE_ERR;
 
-  if (RedisModule_CreateCommand(ctx, "hellodict.get", cmd_GET, "readonly", 1, 1,
-                                0) == REDISMODULE_ERR)
-    return REDISMODULE_ERR;
-
-  if (RedisModule_CreateCommand(ctx, "hellodict.keyrange", cmd_KEYRANGE,
-                                "readonly", 1, 1, 0) == REDISMODULE_ERR)
-    return REDISMODULE_ERR;
-
-  /* Create our global dictionary. Here we'll set our keys and values. */
-  Keyspace = RedisModule_CreateDict(NULL);
+  RedisModuleTypeMethods tm = {
+      .version = REDISMODULE_TYPE_METHOD_VERSION,
+      .rdb_load = TrackerTypeRdbLoad,
+      .rdb_save = TrackerTypeRdbSave,
+      .aof_rewrite = TrackerTypeAofRewrite,
+      .free = TrackerTypeFree,
+      .digest = NULL,
+      .mem_usage = TrackerTypeMemUsage,
+      .aux_load = NULL,
+      .aux_save = NULL,
+  };
+  RedisTrackerType = RedisModule_CreateDataType(ctx, "TrackType", 1, &tm);
+  if (RedisTrackerType == NULL) return REDISMODULE_ERR;
 
   return REDISMODULE_OK;
 }
