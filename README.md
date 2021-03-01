@@ -30,3 +30,7 @@ struct peer_set {
 同时对key设置30min的超时，可以保证不会有死种存在。  
 最后会返回numwant个种子，为了节省parse，直接返回compact格式，后面可以视情况加上compact选项  
 关于节省内存，考虑到最后要返回compact信息，每个tmp维护一大块内存，每个Peer的addr4和addr6直接存偏移。这时候回包直接发一整块连续地址，但是需要考虑stopped产生的地址不连续性
+
+## 复杂度分析
+每次会有两个O(k)的dict遍历，O(n)的response生成(存疑，如何随机遍历还不明确)  
+compaction时有O(n)的遍历删除操作，考虑到pt特性，大部分的peer会被重新移动到新到table中，最终不会有太多的删除动作。

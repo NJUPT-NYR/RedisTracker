@@ -34,11 +34,97 @@
  */
 
 #define REDISMODULE_EXPERIMENTAL_API
-#include "redismodule.h"
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <ctype.h>
 #include <string.h>
+
+#include "redismodule.h"
+
+/* ========================== Internal data structure  =======================*/
+typedef struct Peer {
+  char peer[6];
+  char peer[18];
+} peer;
+
+static peer *createPeerObject(void) {
+  peer *o;
+  o = RedisModule_Calloc(1, sizeof(*o));
+  return o;
+}
+
+static void releasePeerObject(peer *o) {
+  if (!o) return;
+  RedisModule_Free(o);
+}
+
+typedef struct Dict {
+  RedisModuleDict *table;
+  uint64_t when_to_die;
+} dict;
+
+static dict *createDictObject(void) {
+  dict *o;
+  o = RedisModule_Calloc(1, sizeof(*o));
+  o->table = RedisModule_CreateDict(NULL);
+  // todo: cinfig ttl
+  o->when_to_die = RedisModule_Milliseconds() / 1000 + 1800;
+  return o;
+}
+
+static void releaseDictObject(dict *o) {
+  if (!o) return;
+  if (o->table) {
+    RedisModuleDictIter *iter =
+        RedisModule_DictIteratorStartC(o->table, "^", NULL, 0);
+    size_t keylen;
+    void *data;
+    while (RedisModule_DictNextC(iter, &keylen, &data)) {
+      releasePeerObject(data);
+    }
+    RedisModule_DictIteratorStop(iter);
+    RedisModule_FreeDict(NULL, o->table);
+  }
+  RedisModule_Free(o);
+}
+
+typedef struct SeedersObj {
+  dict *d[2];
+  uint32_t seeder_count;
+} SeedersObj;
+
+static SeedersObj *createSeedersObject(void) {
+  SeedersObj *o;
+  o = RedisModule_Calloc(1, sizeof(*o));
+  o->d[0] = createDictObject();
+  o->d[0]->when_to_die -= 1800;
+  o->d[1] = createDictObject();
+  o->seeder_count = 0;
+  return o;
+}
+
+static void releaseSeedersObject(SeedersObj *o) {
+  if (!o) return;
+  if (o->d[0]) releaseDictObject(o->d[0]);
+  if (o->d[1]) releaseDictObject(o->d[1]);
+  RedisModule_Free(o);
+}
+
+/* ========================== Common  func =============================*/
+
+void seedersCompaction(SeedersObj *s) {
+  uint64_t now = RedisModule_Milliseconds() / 1000;
+  if (now > s->d[0]->when_to_die) {
+    return;
+  }
+  releaseDictObject(s->d[0]);
+  s->d[0] = s->d[1];
+  s->d[1] = createDictObject();
+}
+
+/* ================= "redistracker" type commands=======================*/
+
+/* ================= "redistracker" methods commands=======================*/
 
 static RedisModuleDict *Keyspace;
 
@@ -46,12 +132,12 @@ static RedisModuleDict *Keyspace;
  *
  * Set the specified key to the specified value. */
 int cmd_SET(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
-    if (argc != 3) return RedisModule_WrongArity(ctx);
-    RedisModule_DictSet(Keyspace,argv[1],argv[2]);
-    /* We need to keep a reference to the value stored at the key, otherwise
-     * it would be freed when this callback returns. */
-    RedisModule_RetainString(NULL,argv[2]);
-    return RedisModule_ReplyWithSimpleString(ctx, "OK");
+  if (argc != 3) return RedisModule_WrongArity(ctx);
+  RedisModule_DictSet(Keyspace, argv[1], argv[2]);
+  /* We need to keep a reference to the value stored at the key, otherwise
+   * it would be freed when this callback returns. */
+  RedisModule_RetainString(NULL, argv[2]);
+  return RedisModule_ReplyWithSimpleString(ctx, "OK");
 }
 
 /* HELLODICT.GET <key>
@@ -59,13 +145,13 @@ int cmd_SET(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
  * Return the value of the specified key, or a null reply if the key
  * is not defined. */
 int cmd_GET(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
-    if (argc != 2) return RedisModule_WrongArity(ctx);
-    RedisModuleString *val = RedisModule_DictGet(Keyspace,argv[1],NULL);
-    if (val == NULL) {
-        return RedisModule_ReplyWithNull(ctx);
-    } else {
-        return RedisModule_ReplyWithString(ctx, val);
-    }
+  if (argc != 2) return RedisModule_WrongArity(ctx);
+  RedisModuleString *val = RedisModule_DictGet(Keyspace, argv[1], NULL);
+  if (val == NULL) {
+    return RedisModule_ReplyWithNull(ctx);
+  } else {
+    return RedisModule_ReplyWithString(ctx, val);
+  }
 }
 
 /* HELLODICT.KEYRANGE <startkey> <endkey> <count>
@@ -73,60 +159,61 @@ int cmd_GET(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
  * Return a list of matching keys, lexicographically between startkey
  * and endkey. No more than 'count' items are emitted. */
 int cmd_KEYRANGE(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
-    if (argc != 4) return RedisModule_WrongArity(ctx);
+  if (argc != 4) return RedisModule_WrongArity(ctx);
 
-    /* Parse the count argument. */
-    long long count;
-    if (RedisModule_StringToLongLong(argv[3],&count) != REDISMODULE_OK) {
-        return RedisModule_ReplyWithError(ctx,"ERR invalid count");
-    }
+  /* Parse the count argument. */
+  long long count;
+  if (RedisModule_StringToLongLong(argv[3], &count) != REDISMODULE_OK) {
+    return RedisModule_ReplyWithError(ctx, "ERR invalid count");
+  }
 
-    /* Seek the iterator. */
-    RedisModuleDictIter *iter = RedisModule_DictIteratorStart(
-        Keyspace, ">=", argv[1]);
+  /* Seek the iterator. */
+  RedisModuleDictIter *iter =
+      RedisModule_DictIteratorStart(Keyspace, ">=", argv[1]);
 
-    /* Reply with the matching items. */
-    char *key;
-    size_t keylen;
-    long long replylen = 0; /* Keep track of the amitted array len. */
-    RedisModule_ReplyWithArray(ctx,REDISMODULE_POSTPONED_ARRAY_LEN);
-    while((key = RedisModule_DictNextC(iter,&keylen,NULL)) != NULL) {
-        if (replylen >= count) break;
-        if (RedisModule_DictCompare(iter,"<=",argv[2]) == REDISMODULE_ERR)
-            break;
-        RedisModule_ReplyWithStringBuffer(ctx,key,keylen);
-        replylen++;
-    }
-    RedisModule_ReplySetArrayLength(ctx,replylen);
+  /* Reply with the matching items. */
+  char *key;
+  size_t keylen;
+  long long replylen = 0; /* Keep track of the amitted array len. */
+  RedisModule_ReplyWithArray(ctx, REDISMODULE_POSTPONED_ARRAY_LEN);
+  while ((key = RedisModule_DictNextC(iter, &keylen, NULL)) != NULL) {
+    if (replylen >= count) break;
+    if (RedisModule_DictCompare(iter, "<=", argv[2]) == REDISMODULE_ERR) break;
+    RedisModule_ReplyWithStringBuffer(ctx, key, keylen);
+    replylen++;
+  }
+  RedisModule_ReplySetArrayLength(ctx, replylen);
 
-    /* Cleanup. */
-    RedisModule_DictIteratorStop(iter);
-    return REDISMODULE_OK;
+  /* Cleanup. */
+  RedisModule_DictIteratorStop(iter);
+  return REDISMODULE_OK;
 }
 
 /* This function must be present on each Redis module. It is used in order to
  * register the commands into the Redis server. */
-int RedisModule_OnLoad(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
-    REDISMODULE_NOT_USED(argv);
-    REDISMODULE_NOT_USED(argc);
+int RedisModule_OnLoad(RedisModuleCtx *ctx, RedisModuleString **argv,
+                       int argc) {
+  REDISMODULE_NOT_USED(argv);
+  REDISMODULE_NOT_USED(argc);
 
-    if (RedisModule_Init(ctx,"hellodict",1,REDISMODULE_APIVER_1)
-        == REDISMODULE_ERR) return REDISMODULE_ERR;
+  if (RedisModule_Init(ctx, "hellodict", 1, REDISMODULE_APIVER_1) ==
+      REDISMODULE_ERR)
+    return REDISMODULE_ERR;
 
-    if (RedisModule_CreateCommand(ctx,"hellodict.set",
-        cmd_SET,"write deny-oom",1,1,0) == REDISMODULE_ERR)
-        return REDISMODULE_ERR;
+  if (RedisModule_CreateCommand(ctx, "hellodict.set", cmd_SET, "write deny-oom",
+                                1, 1, 0) == REDISMODULE_ERR)
+    return REDISMODULE_ERR;
 
-    if (RedisModule_CreateCommand(ctx,"hellodict.get",
-        cmd_GET,"readonly",1,1,0) == REDISMODULE_ERR)
-        return REDISMODULE_ERR;
+  if (RedisModule_CreateCommand(ctx, "hellodict.get", cmd_GET, "readonly", 1, 1,
+                                0) == REDISMODULE_ERR)
+    return REDISMODULE_ERR;
 
-    if (RedisModule_CreateCommand(ctx,"hellodict.keyrange",
-        cmd_KEYRANGE,"readonly",1,1,0) == REDISMODULE_ERR)
-        return REDISMODULE_ERR;
+  if (RedisModule_CreateCommand(ctx, "hellodict.keyrange", cmd_KEYRANGE,
+                                "readonly", 1, 1, 0) == REDISMODULE_ERR)
+    return REDISMODULE_ERR;
 
-    /* Create our global dictionary. Here we'll set our keys and values. */
-    Keyspace = RedisModule_CreateDict(NULL);
+  /* Create our global dictionary. Here we'll set our keys and values. */
+  Keyspace = RedisModule_CreateDict(NULL);
 
-    return REDISMODULE_OK;
+  return REDISMODULE_OK;
 }
