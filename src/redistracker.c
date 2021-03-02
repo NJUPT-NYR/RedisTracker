@@ -294,6 +294,8 @@ void updateIP(SeedersObj *o, RedisModuleString *passkey, uint8_t *v4,
     memcpy(p->peer6, v6, 16);
     *(uint16_t *)(p->peer6 + 16) = port;
   }
+  o->d[1]->v4_seeder -= p->use_v4;
+  o->d[1]->v6_seeder -= p->use_v6;
 }
 
 // void genResponse(SeedersObj *o, int num_want) {}
