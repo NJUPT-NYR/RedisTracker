@@ -91,6 +91,63 @@ void seedersCompaction(SeedersObj *s) {
   s->d[1] = createDictObject();
 }
 
+int _s2u(const char *start, const char *end) {
+  if (start[0] == '0' && (start[1] | 0x20) == 'x') {
+    int x = 0;
+    for (const char *i = start + 2; i < end; i++) {
+      char ch = *i;
+      if (ch >= '0' && ch <= '9') {
+        x = x * 16 + ch - '0';
+      } else {
+        ch = ch | 0x20;
+        if (ch >= 'a' && ch <= 'f') {
+          x = x * 16 + ch - 'a';
+        } else {
+          return -1;
+        }
+      }
+    }
+    return x;
+  } else {
+    int x = 0;
+    for (const char *i = start; i < end; i++) {
+      char ch = *i;
+      if (ch >= '0' && ch <= '9') {
+        x = x * 10 + ch - '0';
+      } else {
+        return -1;
+      }
+    }
+    return x;
+  }
+}
+
+int parseIPV4Inner(const char *s, size_t len, uint8_t *res) {
+  size_t i, cnt = 0;
+  size_t start = 0;
+  for (i = 0; i <= len; i++) {
+    // danger here, may overflow!
+    if (i == len || s[i] == '.') {
+      if (start == i || cnt > 3) {
+        return REDISMODULE_ERR;
+      }
+      int x = _s2u(s + start, s + i);
+      if (x >= 0 && x <= 255) {
+        res[cnt] = (uint8_t)x;
+        cnt++;
+        start = i + 1;
+      } else {
+        return REDISMODULE_ERR;
+      }
+    }
+  }
+  if (cnt == 4) {
+    return REDISMODULE_OK;
+  } else {
+    return REDISMODULE_ERR;
+  }
+}
+
 int parseIPV4(RedisModuleString *str, uint8_t *res) {
   if (0 == RedisModule_StringCompare(str, TrackerNoneString)) {
     memset(res, 0, 4);
@@ -98,11 +155,96 @@ int parseIPV4(RedisModuleString *str, uint8_t *res) {
   }
   size_t len;
   const char *s = RedisModule_StringPtrLen(str, &len);
-  if (len != 4) return REDISMODULE_ERR;
-  for (int i = 0; i < 4; i++) {
-    res[i] = (uint8_t)s[i];
+  // if (len != 4) return REDISMODULE_ERR;
+  // for (int i = 0; i < 4; i++) {
+  //   res[i] = (uint8_t)s[i];
+  // }
+  return parseIPV4Inner(s, len, res);
+}
+
+int _hex2u(const char *start, const char *end) {
+  int x = 0;
+  for (const char *i = start; i < end; i++) {
+    char ch = *i;
+    if (ch >= '0' && ch <= '9') {
+      x = x * 16 + ch - '0';
+    } else {
+      ch = ch | 0x20;
+      if (ch >= 'a' && ch <= 'f') {
+        x = x * 16 + ch - 'a';
+      } else {
+        return -1;
+      }
+    }
   }
-  return REDISMODULE_OK;
+  return x;
+}
+
+int parseIPV6Inner(const char *s, size_t len, uint8_t *res) {
+  size_t i, cnt = 0;
+  size_t start = 0;
+  for (i = 0; i <= len; i++) {
+    // danger here, may overflow!
+    if (i == len || s[i] == ':') {
+      if (cnt > 15) {
+        return REDISMODULE_ERR;
+      }
+      if (start == i) {
+        // go reverse
+        if (i == 0) {
+          // like ::0:0
+          i++;
+        }
+        for (int j = cnt; j < 16; j++) {
+          res[j] = 0;
+        }
+        break;
+      }
+      int x = _hex2u(s + start, s + i);
+      if (x >= 0 && x <= 65535) {
+        res[cnt] = x / 256;
+        cnt++;
+        res[cnt] = x % 256;
+        cnt++;
+        start = i + 1;
+      } else {
+        return REDISMODULE_ERR;
+      }
+    }
+  }
+  if (cnt == 16) {
+    return REDISMODULE_OK;
+  }
+  if (cnt < 16 && i < len) {
+    // reverse
+    size_t inner = i;
+    size_t end = len;
+    int back = 15;
+    for (i = len - 1; i >= inner; i--) {
+      if (s[i] == ':') {
+        if (back <= (int)cnt || i + 1 == end) {
+          // like 0:0::
+          if (end == len && i == inner)
+            return REDISMODULE_OK;
+          else
+            return REDISMODULE_ERR;
+        }
+        int x = _hex2u(s + i + 1, s + end);
+        if (x >= 0 && x <= 65535) {
+          res[back] = x % 256;
+          back--;
+          res[back] = x / 256;
+          back--;
+          end = i;
+        } else {
+          return REDISMODULE_ERR;
+        }
+      }
+    }
+    return REDISMODULE_OK;
+  } else {
+    return REDISMODULE_ERR;
+  }
 }
 
 int parseIPV6(RedisModuleString *str, uint8_t *res) {
@@ -112,11 +254,12 @@ int parseIPV6(RedisModuleString *str, uint8_t *res) {
   }
   size_t len;
   const char *s = RedisModule_StringPtrLen(str, &len);
-  if (len != 16) return REDISMODULE_ERR;
-  for (int i = 0; i < 16; i++) {
-    res[i] = (uint8_t)s[i];
-  }
-  return REDISMODULE_OK;
+  // if (len != 16) return REDISMODULE_ERR;
+  // for (int i = 0; i < 16; i++) {
+  //   res[i] = (uint8_t)s[i];
+  // }
+  // return REDISMODULE_OK;
+  return parseIPV6Inner(s, len, res);
 }
 
 void updateIP(SeedersObj *o, RedisModuleString *passkey, uint8_t *v4,
@@ -132,6 +275,7 @@ void updateIP(SeedersObj *o, RedisModuleString *passkey, uint8_t *v4,
     } else {
       p = createPeerObject();
       RedisModule_DictSet(d2, passkey, p);
+      o->seeder_count++;
     }
   }
   memcpy(p->peer, v4, 4);
@@ -147,8 +291,8 @@ int RedisTrackerTypeAnnounce_RedisCommand(RedisModuleCtx *ctx,
                                           RedisModuleString **argv, int argc) {
   RedisModule_AutoMemory(ctx);
   if (argc != 6) {
-    // GG
-    // todo
+    RedisModule_ReplyWithError(ctx, "FUCK U");
+    return REDISMODULE_ERR;
   }
   SeedersObj *o = NULL;
   RedisModuleKey *key = RedisModule_OpenKey(ctx, argv[1], REDISMODULE_WRITE);
@@ -170,20 +314,27 @@ int RedisTrackerTypeAnnounce_RedisCommand(RedisModuleCtx *ctx,
   if (parseIPV4(argv[3], ipv4) == REDISMODULE_ERR) {
     // GG
     // todo
+    RedisModule_ReplyWithError(ctx, "FUCK U");
+    return REDISMODULE_ERR;
   }
   if (parseIPV6(argv[4], ipv6) == REDISMODULE_ERR) {
     // GG
     // todo
+    RedisModule_ReplyWithError(ctx, "FUCK U");
+    return REDISMODULE_ERR;
   }
   if (RedisModule_StringToLongLong(argv[5], &tmp) && (tmp < 0 || tmp > 65535)) {
     // GG
     // todo
+    RedisModule_ReplyWithError(ctx, "FUCK U");
+    return REDISMODULE_ERR;
   }
   port = tmp % 65536;
   seedersCompaction(o);
 
   updateIP(o, argv[2], ipv4, ipv6, port);
   // todo: response
+  RedisModule_ReplyWithCString(ctx, "hello world");
   return REDISMODULE_OK;
 }
 
@@ -214,7 +365,7 @@ size_t TrackerTypeMemUsage(const void *value) {
   return 114514;
 }
 
-void TrackerTypeFree(void *value) { releaseDictObject(value); }
+void TrackerTypeFree(void *value) { releaseSeedersObject(value); }
 
 void TrackerTypeDigest(RedisModuleDigest *digest, void *value) {
   REDISMODULE_NOT_USED(value);
