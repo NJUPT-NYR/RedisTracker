@@ -4,7 +4,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "ipv4_parse.h"
 #include "redismodule.h"
 
 static RedisModuleType *RedisTrackerType;
@@ -120,6 +119,27 @@ int parseIPV6(RedisModuleString *str, uint8_t *res) {
   return REDISMODULE_OK;
 }
 
+void updateIP(SeedersObj *o, RedisModuleString *passkey, uint8_t *v4,
+              uint8_t *v6, uint16_t port) {
+  RedisModuleDict *d2 = o->d[1]->table;
+  RedisModuleDict *d1 = o->d[0]->table;
+  peer *p = RedisModule_DictGet(d2, passkey, NULL);
+  if (p == NULL) {
+    p = RedisModule_DictGet(d1, passkey, NULL);
+    if (p != NULL) {
+      RedisModule_DictDel(d1, passkey, NULL);
+      RedisModule_DictSet(d2, passkey, p);
+    } else {
+      p = createPeerObject;
+      RedisModule_DictSet(d2, passkey, p);
+    }
+  }
+  memcpy(p->peer, v4, 4);
+  *(uint16_t *)(p->peer + 4) = port;
+  memcpy(p->peer6, v6, 16);
+  *(uint16_t *)(p->peer6 + 16) = port;
+}
+
 /* ================= "redistracker" type commands=======================*/
 
 /* ANNOUNCE <info_hash> <passkey> <v4ip> <v6ip> <port> */
@@ -144,23 +164,26 @@ int RedisTrackerTypeAnnounce_RedisCommand(RedisModuleCtx *ctx,
     o = RedisModule_ModuleTypeGetValue(key);
   }
   uint8_t ipv4[4];
-  uint16_t ipv6[8];
+  uint8_t ipv6[16];
   int16_t port;
-  uint64_t tmp;
-  if (parseIPV4(argv[2], ipv4) == REDISMODULE_ERR) {
+  int64_t tmp;
+  if (parseIPV4(argv[3], ipv4) == REDISMODULE_ERR) {
     // GG
     // todo
   }
-  if (parseIPV6(argv[3], ipv6) == REDISMODULE_ERR) {
+  if (parseIPV6(argv[4], ipv6) == REDISMODULE_ERR) {
     // GG
     // todo
   }
-  if (RedisModule_StringToLongLong(argv[4], &tmp) && (tmp < 0 || tmp > 65535)) {
+  if (RedisModule_StringToLongLong(argv[5], &tmp) && (tmp < 0 || tmp > 65535)) {
     // GG
     // todo
   }
   port = tmp % 65536;
-  // todo
+  seedersCompaction(o);
+  
+  updateIP(o, argv[2], ipv4, ipv6, port);
+  // todo: response
   return REDISMODULE_OK;
 }
 
