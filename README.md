@@ -28,7 +28,7 @@ struct peer_set {
 如果达到，那么t[1]置为t[0]，同时创建新的tmp
 根据以上信息，每个做种的超时时间在30min-60min不等。  
 同时对key设置30min的超时，可以保证不会有死种存在。  
-最后会返回numwant个种子，为了节省parse，直接返回compact格式，后面可以视情况加上compact选项  
+最后会返回numwant个种子，为了节省parse，直接返回compact格式，后面可以视情况加上compact选项  
 关于节省内存，考虑到最后要返回compact信息，每个tmp维护一大块内存，每个Peer的addr4和addr6直接存偏移。这时候回包直接发一整块连续地址，但是需要考虑stopped产生的地址不连续性
 
 ## 复杂度分析
