@@ -12,6 +12,8 @@ static RedisModuleString *TrackerNoneString;
 
 /* ========================== Internal data structure  =======================*/
 typedef struct Peer {
+  uint8_t use_v4;
+  uint8_t use_v6;
   uint8_t peer[6];
   uint8_t peer6[18];
 } peer;
@@ -19,6 +21,8 @@ typedef struct Peer {
 static peer *createPeerObject(void) {
   peer *o;
   o = RedisModule_Calloc(1, sizeof(*o));
+  o->use_v4 = 0;
+  o->use_v6 = 0;
   return o;
 }
 
@@ -30,6 +34,8 @@ static void releasePeerObject(peer *o) {
 typedef struct Dict {
   RedisModuleDict *table;
   uint64_t when_to_die;
+  uint32_t v4_seeder;
+  uint32_t v6_seeder;
 } dict;
 
 static dict *createDictObject(void) {
@@ -38,6 +44,8 @@ static dict *createDictObject(void) {
   o->table = RedisModule_CreateDict(NULL);
   // todo: cinfig ttl
   o->when_to_die = RedisModule_Milliseconds() / 1000 + 1800;
+  o->v4_seeder = 0;
+  o->v6_seeder = 0;
   return o;
 }
 
@@ -59,7 +67,6 @@ static void releaseDictObject(dict *o) {
 
 typedef struct SeedersObj {
   dict *d[2];
-  uint32_t seeder_count;
 } SeedersObj;
 
 static SeedersObj *createSeedersObject(void) {
@@ -68,7 +75,6 @@ static SeedersObj *createSeedersObject(void) {
   o->d[0] = createDictObject();
   o->d[0]->when_to_die -= 1800;
   o->d[1] = createDictObject();
-  o->seeder_count = 0;
   return o;
 }
 
@@ -148,17 +154,13 @@ int parseIPV4Inner(const char *s, size_t len, uint8_t *res) {
   }
 }
 
-int parseIPV4(RedisModuleString *str, uint8_t *res) {
+int parseIPV4(RedisModuleString *str, uint8_t *res, uint8_t **has_v4) {
   if (0 == RedisModule_StringCompare(str, TrackerNoneString)) {
-    memset(res, 0, 4);
+    *has_v4 = NULL;
     return REDISMODULE_OK;
   }
   size_t len;
   const char *s = RedisModule_StringPtrLen(str, &len);
-  // if (len != 4) return REDISMODULE_ERR;
-  // for (int i = 0; i < 4; i++) {
-  //   res[i] = (uint8_t)s[i];
-  // }
   return parseIPV4Inner(s, len, res);
 }
 
@@ -247,18 +249,13 @@ int parseIPV6Inner(const char *s, size_t len, uint8_t *res) {
   }
 }
 
-int parseIPV6(RedisModuleString *str, uint8_t *res) {
+int parseIPV6(RedisModuleString *str, uint8_t *res, uint8_t **has_v6) {
   if (0 == RedisModule_StringCompare(str, TrackerNoneString)) {
-    memset(res, 0, 16);
+    *has_v6 = NULL;
     return REDISMODULE_OK;
   }
   size_t len;
   const char *s = RedisModule_StringPtrLen(str, &len);
-  // if (len != 16) return REDISMODULE_ERR;
-  // for (int i = 0; i < 16; i++) {
-  //   res[i] = (uint8_t)s[i];
-  // }
-  // return REDISMODULE_OK;
   return parseIPV6Inner(s, len, res);
 }
 
@@ -271,18 +268,35 @@ void updateIP(SeedersObj *o, RedisModuleString *passkey, uint8_t *v4,
     p = RedisModule_DictGet(d1, passkey, NULL);
     if (p != NULL) {
       RedisModule_DictDel(d1, passkey, NULL);
+      o->d[0]->v4_seeder -= p->use_v4;
+      o->d[0]->v6_seeder -= p->use_v6;
       RedisModule_DictSet(d2, passkey, p);
     } else {
       p = createPeerObject();
       RedisModule_DictSet(d2, passkey, p);
-      o->seeder_count++;
     }
+  } else {
+    o->d[1]->v4_seeder -= p->use_v4;
+    o->d[1]->v6_seeder -= p->use_v6;
   }
-  memcpy(p->peer, v4, 4);
-  *(uint16_t *)(p->peer + 4) = port;
-  memcpy(p->peer6, v6, 16);
-  *(uint16_t *)(p->peer6 + 16) = port;
+
+  if (v4 == NULL) {
+    p->use_v4 = 0;
+  } else {
+    p->use_v4 = 1;
+    memcpy(p->peer, v4, 4);
+    *(uint16_t *)(p->peer + 4) = port;
+  }
+  if (v6 == NULL) {
+    p->use_v6 = 0;
+  } else {
+    p->use_v6 = 1;
+    memcpy(p->peer6, v6, 16);
+    *(uint16_t *)(p->peer6 + 16) = port;
+  }
 }
+
+// void genResponse(SeedersObj *o, int num_want) {}
 
 /* ================= "redistracker" type commands=======================*/
 
@@ -309,15 +323,16 @@ int RedisTrackerTypeAnnounce_RedisCommand(RedisModuleCtx *ctx,
   }
   uint8_t ipv4[4];
   uint8_t ipv6[16];
+  uint8_t *v4 = ipv4, *v6 = ipv6;
   int16_t port;
   int64_t tmp;
-  if (parseIPV4(argv[3], ipv4) == REDISMODULE_ERR) {
+  if (parseIPV4(argv[3], ipv4, &v4) == REDISMODULE_ERR) {
     // GG
     // todo
     RedisModule_ReplyWithError(ctx, "FUCK U");
     return REDISMODULE_ERR;
   }
-  if (parseIPV6(argv[4], ipv6) == REDISMODULE_ERR) {
+  if (parseIPV6(argv[4], ipv6, &v6) == REDISMODULE_ERR) {
     // GG
     // todo
     RedisModule_ReplyWithError(ctx, "FUCK U");
@@ -332,7 +347,7 @@ int RedisTrackerTypeAnnounce_RedisCommand(RedisModuleCtx *ctx,
   port = tmp % 65536;
   seedersCompaction(o);
 
-  updateIP(o, argv[2], ipv4, ipv6, port);
+  updateIP(o, argv[2], v4, v6, port);
   // todo: response
   RedisModule_ReplyWithCString(ctx, "hello world");
   return REDISMODULE_OK;
@@ -367,12 +382,6 @@ size_t TrackerTypeMemUsage(const void *value) {
 
 void TrackerTypeFree(void *value) { releaseSeedersObject(value); }
 
-void TrackerTypeDigest(RedisModuleDigest *digest, void *value) {
-  REDISMODULE_NOT_USED(value);
-  REDISMODULE_NOT_USED(digest);
-  // todo
-}
-
 /* This function must be present on each Redis module. It is used in order
  * to register the commands into the Redis server. */
 int RedisModule_OnLoad(RedisModuleCtx *ctx, RedisModuleString **argv,
@@ -395,8 +404,8 @@ int RedisModule_OnLoad(RedisModuleCtx *ctx, RedisModuleString **argv,
       .rdb_save = TrackerTypeRdbSave,
       .aof_rewrite = TrackerTypeAofRewrite,
       .free = TrackerTypeFree,
-      .digest = TrackerTypeDigest,
       .mem_usage = TrackerTypeMemUsage,
+      .digest = NULL,
       .aux_load = NULL,
       .aux_save = NULL,
   };
