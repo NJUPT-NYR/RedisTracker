@@ -1,11 +1,12 @@
 #define REDISMODULE_EXPERIMENTAL_API
+#include "redistracker.h"
+
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "redismodule.h"
-#include "redistracker.h"
 
 static RedisModuleType *RedisTrackerType;
 
@@ -49,6 +50,33 @@ void releaseDictObject(dict *o) {
     RedisModule_FreeDict(NULL, o->table);
   }
   RedisModule_Free(o);
+}
+
+typedef struct SeederIter {
+  int cnt;
+  RedisModuleDictIter *iter[2];
+} SeederIter;
+
+void initSeederIter(SeederIter *i, SeedersObj *o) {
+  i->cnt = 0;
+  i->iter[0] = RedisModule_DictIteratorStartC(o->d[0]->table, "^", NULL, 0);
+  i->iter[1] = RedisModule_DictIteratorStartC(o->d[1]->table, "^", NULL, 0);
+}
+
+void destructSeederIter(SeederIter *i) {
+  RedisModule_DictIteratorStop(i->iter[0]);
+  RedisModule_DictIteratorStop(i->iter[1]);
+}
+
+void *SeederIterNext(SeederIter *iter, size_t *keylen, void **dataptr) {
+  void *ret = RedisModule_DictNextC(iter->iter[iter->cnt], keylen, dataptr);
+  if (ret == NULL) {
+    if (iter->cnt == 0) {
+      iter->cnt = 1;
+      ret = RedisModule_DictNextC(iter->iter[iter->cnt], keylen, dataptr);
+    }
+  }
+  return ret;
 }
 
 SeedersObj *createSeedersObject(void) {
@@ -280,7 +308,17 @@ void updateIP(SeedersObj *o, RedisModuleString *passkey, uint8_t *v4,
   o->d[1]->v6_seeder -= p->use_v6;
 }
 
-// void genResponse(SeedersObj *o, int num_want) {}
+void genResponse(SeedersObj *o, int num_want) {
+  int seeder_cnt = o->d[0]->v4_seeder;
+  seeder_cnt += o->d[0]->v6_seeder;
+  seeder_cnt += o->d[1]->v4_seeder;
+  seeder_cnt += o->d[1]->v6_seeder;
+  int step = seeder_cnt / num_want;
+  int start = seeder_cnt % num_want;
+  if (step <= 0) step = 1;
+  if (start < 0) start = 0;
+  start = rand() % start;
+}
 
 /* ================= "redistracker" type commands=======================*/
 
