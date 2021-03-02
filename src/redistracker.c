@@ -4,14 +4,17 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "ipv4_parse.h"
 #include "redismodule.h"
 
 static RedisModuleType *RedisTrackerType;
 
+static RedisModuleString *TrackerNoneString;
+
 /* ========================== Internal data structure  =======================*/
 typedef struct Peer {
-  char peer[6];
-  char peer6[18];
+  uint8_t peer[6];
+  uint8_t peer6[18];
 } peer;
 
 static peer *createPeerObject(void) {
@@ -89,6 +92,34 @@ void seedersCompaction(SeedersObj *s) {
   s->d[1] = createDictObject();
 }
 
+int parseIPV4(RedisModuleString *str, uint8_t *res) {
+  if (0 == RedisModule_StringCompare(str, TrackerNoneString)) {
+    memset(res, 0, 4);
+    return REDISMODULE_OK;
+  }
+  size_t len;
+  const char *s = RedisModule_StringPtrLen(str, &len);
+  if (len != 4) return REDISMODULE_ERR;
+  for (int i = 0; i < 4; i++) {
+    res[i] = (uint8_t)s[i];
+  }
+  return REDISMODULE_OK;
+}
+
+int parseIPV6(RedisModuleString *str, uint8_t *res) {
+  if (0 == RedisModule_StringCompare(str, TrackerNoneString)) {
+    memset(res, 0, 16);
+    return REDISMODULE_OK;
+  }
+  size_t len;
+  const char *s = RedisModule_StringPtrLen(str, &len);
+  if (len != 16) return REDISMODULE_ERR;
+  for (int i = 0; i < 16; i++) {
+    res[i] = (uint8_t)s[i];
+  }
+  return REDISMODULE_OK;
+}
+
 /* ================= "redistracker" type commands=======================*/
 
 /* ANNOUNCE <info_hash> <passkey> <v4ip> <v6ip> <port> */
@@ -112,7 +143,23 @@ int RedisTrackerTypeAnnounce_RedisCommand(RedisModuleCtx *ctx,
     }
     o = RedisModule_ModuleTypeGetValue(key);
   }
-  
+  uint8_t ipv4[4];
+  uint16_t ipv6[8];
+  int16_t port;
+  uint64_t tmp;
+  if (parseIPV4(argv[2], ipv4) == REDISMODULE_ERR) {
+    // GG
+    // todo
+  }
+  if (parseIPV6(argv[3], ipv6) == REDISMODULE_ERR) {
+    // GG
+    // todo
+  }
+  if (RedisModule_StringToLongLong(argv[4], &tmp) && (tmp < 0 || tmp > 65535)) {
+    // GG
+    // todo
+  }
+  port = tmp % 65536;
   // todo
   return REDISMODULE_OK;
 }
@@ -146,10 +193,14 @@ size_t TrackerTypeMemUsage(const void *value) {
 
 void TrackerTypeFree(void *value) { releaseDictObject(value); }
 
+void TrackerTypeDigest(RedisModuleDigest *digest, void *value) {
+  REDISMODULE_NOT_USED(value);
+  REDISMODULE_NOT_USED(digest);
+  // todo
+}
 
-
-/* This function must be present on each Redis module. It is used in order to
- * register the commands into the Redis server. */
+/* This function must be present on each Redis module. It is used in order
+ * to register the commands into the Redis server. */
 int RedisModule_OnLoad(RedisModuleCtx *ctx, RedisModuleString **argv,
                        int argc) {
   REDISMODULE_NOT_USED(argv);
@@ -170,12 +221,13 @@ int RedisModule_OnLoad(RedisModuleCtx *ctx, RedisModuleString **argv,
       .rdb_save = TrackerTypeRdbSave,
       .aof_rewrite = TrackerTypeAofRewrite,
       .free = TrackerTypeFree,
-      .digest = NULL,
+      .digest = TrackerTypeDigest,
       .mem_usage = TrackerTypeMemUsage,
       .aux_load = NULL,
       .aux_save = NULL,
   };
   RedisTrackerType = RedisModule_CreateDataType(ctx, "TrackType", 1, &tm);
+  TrackerNoneString = RedisModule_CreateString(NULL, "NONE", 4);
   if (RedisTrackerType == NULL) return REDISMODULE_ERR;
 
   return REDISMODULE_OK;
