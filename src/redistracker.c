@@ -130,7 +130,7 @@ void updateIP(SeedersObj *o, RedisModuleString *passkey, uint8_t *v4,
       RedisModule_DictDel(d1, passkey, NULL);
       RedisModule_DictSet(d2, passkey, p);
     } else {
-      p = createPeerObject;
+      p = createPeerObject();
       RedisModule_DictSet(d2, passkey, p);
     }
   }
@@ -181,7 +181,7 @@ int RedisTrackerTypeAnnounce_RedisCommand(RedisModuleCtx *ctx,
   }
   port = tmp % 65536;
   seedersCompaction(o);
-  
+
   updateIP(o, argv[2], ipv4, ipv6, port);
   // todo: response
   return REDISMODULE_OK;
