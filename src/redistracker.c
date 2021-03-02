@@ -5,20 +5,13 @@
 #include <string.h>
 
 #include "redismodule.h"
+#include "redistracker.h"
 
 static RedisModuleType *RedisTrackerType;
 
 static RedisModuleString *TrackerNoneString;
 
-/* ========================== Internal data structure  =======================*/
-typedef struct Peer {
-  uint8_t use_v4;
-  uint8_t use_v6;
-  uint8_t peer[6];
-  uint8_t peer6[18];
-} peer;
-
-static peer *createPeerObject(void) {
+peer *createPeerObject(void) {
   peer *o;
   o = RedisModule_Calloc(1, sizeof(*o));
   o->use_v4 = 0;
@@ -26,19 +19,12 @@ static peer *createPeerObject(void) {
   return o;
 }
 
-static void releasePeerObject(peer *o) {
+void releasePeerObject(peer *o) {
   if (!o) return;
   RedisModule_Free(o);
 }
 
-typedef struct Dict {
-  RedisModuleDict *table;
-  uint64_t when_to_die;
-  uint32_t v4_seeder;
-  uint32_t v6_seeder;
-} dict;
-
-static dict *createDictObject(void) {
+dict *createDictObject(void) {
   dict *o;
   o = RedisModule_Calloc(1, sizeof(*o));
   o->table = RedisModule_CreateDict(NULL);
@@ -49,7 +35,7 @@ static dict *createDictObject(void) {
   return o;
 }
 
-static void releaseDictObject(dict *o) {
+void releaseDictObject(dict *o) {
   if (!o) return;
   if (o->table) {
     RedisModuleDictIter *iter =
@@ -65,11 +51,7 @@ static void releaseDictObject(dict *o) {
   RedisModule_Free(o);
 }
 
-typedef struct SeedersObj {
-  dict *d[2];
-} SeedersObj;
-
-static SeedersObj *createSeedersObject(void) {
+SeedersObj *createSeedersObject(void) {
   SeedersObj *o;
   o = RedisModule_Calloc(1, sizeof(*o));
   o->d[0] = createDictObject();
@@ -78,7 +60,7 @@ static SeedersObj *createSeedersObject(void) {
   return o;
 }
 
-static void releaseSeedersObject(SeedersObj *o) {
+void releaseSeedersObject(SeedersObj *o) {
   if (!o) return;
   if (o->d[0]) releaseDictObject(o->d[0]);
   if (o->d[1]) releaseDictObject(o->d[1]);
